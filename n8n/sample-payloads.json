@@ -1,0 +1,5 @@
+{
+  "positive": { "studentName": "Jane Doe", "email": "jane@example.com", "courseName": "Web Development", "rating": 5, "feedbackMessage": "The course was informative and practical." },
+  "needsAttention": { "studentName": "John Smith", "email": "john@example.com", "courseName": "Web Development", "rating": 2, "feedbackMessage": "The pace was too fast for me." },
+  "invalid": { "studentName": "", "email": "not-an-email", "courseName": "", "rating": 6, "feedbackMessage": "" }
+}

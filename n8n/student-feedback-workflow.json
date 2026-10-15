@@ -1,0 +1,463 @@
+{
+  "name": "Student Feedback Automation Workflow",
+  "nodes": [
+    {
+      "id": "note-4",
+      "name": "Note 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        60
+      ],
+      "parameters": {
+        "content": "## 4 \u00b7 Notify & respond\nEmail text adapts to the rating and retries up to 3 times. Every path ends in exactly one response (200 / 400 / 500 / 502).",
+        "width": 580,
+        "height": 600,
+        "color": 7
+      }
+    },
+    {
+      "id": "note-3",
+      "name": "Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1240,
+        60
+      ],
+      "parameters": {
+        "content": "## 3 \u00b7 Store\nAppends one row to Feedback Responses. On failure \u2192 500, no email is sent.",
+        "width": 280,
+        "height": 600,
+        "color": 6
+      }
+    },
+    {
+      "id": "note-2",
+      "name": "Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        700,
+        60
+      ],
+      "parameters": {
+        "content": "## 2 \u00b7 Classify by rating\nIF rating <= 2 \u2192 Needs Attention. Otherwise \u2192 Positive. Rating is compared as a number.",
+        "width": 480,
+        "height": 600,
+        "color": 5
+      }
+    },
+    {
+      "id": "note-1",
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        180
+      ],
+      "parameters": {
+        "content": "## 1 \u00b7 Receive & validate\nWebhook receives the React POST. Code node trims, type-checks and limits every field; invalid input gets a 400 and stops here.",
+        "width": 700,
+        "height": 480,
+        "color": 4
+      }
+    },
+    {
+      "name": "Webhook: Receive Feedback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "student-feedback-webhook",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "student-feedback",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "node-01"
+    },
+    {
+      "name": "Validate and Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst fail = (error) => [{ json: { valid: false, error } }];\nif (!body || typeof body !== 'object' || Array.isArray(body)) return fail('Invalid request body.');\nconst clean = (v) => (typeof v === 'string' ? v.trim() : '');\nconst studentName = clean(body.studentName);\nconst email = clean(body.email).toLowerCase();\nconst courseName = clean(body.courseName);\nconst feedbackMessage = clean(body.feedbackMessage);\nconst rating = typeof body.rating === 'number' ? body.rating : NaN;\nconst emailOk = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) && email.length <= 254;\nif (!studentName || !courseName || !feedbackMessage || !emailOk || !Number.isInteger(rating) || rating < 1 || rating > 5 || studentName.length > 100 || courseName.length > 150 || feedbackMessage.length > 1000) {\n  return fail('Please provide all required fields and a valid rating.');\n}\nconst safe = (s) => (/^[=+\\-@]/.test(s) ? \"'\" + s : s);\nreturn [{ json: { valid: true, data: {\n  studentName: safe(studentName), email, courseName: safe(courseName), rating,\n  feedbackMessage: safe(feedbackMessage),\n  submittedAt: new Date().toISOString()\n} } }];"
+      },
+      "id": "node-02"
+    },
+    {
+      "name": "IF: Is Feedback Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.valid }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-03"
+    },
+    {
+      "name": "Respond 400: Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        540
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, saved: false, message: $json.error } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-04"
+    },
+    {
+      "name": "IF: Rating <= 2?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.data.rating }}",
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              },
+              "rightValue": 2
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-05"
+    },
+    {
+      "name": "Status: Needs Attention",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1000,
+        180
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "status",
+              "value": "Needs Attention",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "node-06"
+    },
+    {
+      "name": "Status: Positive",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1000,
+        420
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "status",
+              "value": "Positive",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "node-07"
+    },
+    {
+      "name": "Google Sheets: Append Feedback",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        300
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [],
+          "schema": [],
+          "value": {
+            "Student Name": "={{ $json.data.studentName }}",
+            "Email": "={{ $json.data.email }}",
+            "Course Name": "={{ $json.data.courseName }}",
+            "Rating": "={{ $json.data.rating }}",
+            "Feedback Message": "={{ $json.data.feedbackMessage }}",
+            "Status": "={{ $json.status }}",
+            "Submitted At": "={{ $json.data.submittedAt }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-08"
+    },
+    {
+      "name": "Respond 500: Save Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        480
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, saved: false, message: \"We couldn't save your feedback right now. Please try again later.\" } }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "node-09"
+    },
+    {
+      "name": "Email: Send Acknowledgement",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1600,
+        300
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "={{ $('Validate and Normalize Data').item.json.data.email }}",
+        "subject": "Thank You for Your Feedback!",
+        "emailFormat": "text",
+        "text": "=Hello {{ $('Validate and Normalize Data').item.json.data.studentName }},\n\nThank you for taking the time to share your feedback about\n{{ $('Validate and Normalize Data').item.json.data.courseName }}.\n\nYour response has been received successfully. We appreciate\nyour contribution and use student feedback to improve our\ntraining experience.\n\nYour submitted rating: {{ $('Validate and Normalize Data').item.json.data.rating }}/5\n\n{{ $('Validate and Normalize Data').item.json.data.rating <= 2 ? \"We're sorry your experience fell short. Your comments will be shared with our training team so we can look into them.\" : \"We're glad you had a good experience and your comments will be shared with our training team.\" }}\n\nThank you for being part of our learning community.\n\nKind regards,\nThe Training Team",
+        "options": {}
+      },
+      "id": "node-10",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "name": "Respond 502: Saved, Email Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1860,
+        420
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, saved: true, message: \"Your feedback was saved, but we couldn't send the confirmation email. You don't need to submit again.\" } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "node-11"
+    },
+    {
+      "name": "Respond 200: Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1860,
+        180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, saved: true, message: \"Thank you for your feedback! Your response has been received successfully.\" } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-12"
+    }
+  ],
+  "connections": {
+    "Webhook: Receive Feedback": {
+      "main": [
+        [
+          {
+            "node": "Validate and Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "IF: Is Feedback Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Is Feedback Valid?": {
+      "main": [
+        [
+          {
+            "node": "IF: Rating <= 2?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400: Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Rating <= 2?": {
+      "main": [
+        [
+          {
+            "node": "Status: Needs Attention",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Status: Positive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status: Needs Attention": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Append Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status: Positive": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Append Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Append Feedback": {
+      "main": [
+        [
+          {
+            "node": "Email: Send Acknowledgement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 500: Save Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: Send Acknowledgement": {
+      "main": [
+        [
+          {
+            "node": "Respond 200: Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 502: Saved, Email Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
