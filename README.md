@@ -1,150 +1,85 @@
-# Handbook-RAG-System
+# Student Feedback Automation System
 
-A Retrieval-Augmented Generation (RAG) API that answers student questions using **only** the
-ZAIO Full-Stack AI Engineer Bootcamp Handbook, and cites the PDF page it used.
+React form → n8n Webhook → validation → rating classification → Google Sheets → acknowledgement email → JSON response back to React.
 
-## 1. Overview and objectives
-Students ask a question → the app finds the most relevant handbook passages → an LLM writes an
-answer from those passages → the API returns the answer plus page citations. If the handbook has
-no answer, it returns exactly: `I couldn't find that information in the ZAIO handbook.`
-
-## 2. Features
-- Page-by-page PDF extraction (PyMuPDF), conservative cleaning, structure-aware chunking
-- Sentence Transformers embeddings stored in a **persistent** ChromaDB
-- Repeatable ingestion (re-running never duplicates chunks; changed PDF replaces old chunks)
-- Relevance threshold + abstention (the LLM is not called when no evidence is found)
-- Citations built by the backend from chunk metadata, never guessed by the LLM
-- FastAPI + Pydantic validation, clear 422/503/500 errors, Swagger UI at `/docs`
-- n8n-ready JSON API
-
-## 3. Architecture
 ```
-INGESTION  handbook.pdf → extract per page → clean → chunk (keeps pages/section) → embed → ChromaDB (disk)
-QUERY      question → validate → embed → ChromaDB search → drop chunks below threshold
-             ├─ none left → exact fallback JSON (no LLM call)
-             └─ some left → number passages [1],[2].. → LLM → check output → map [n] to real pages → JSON
-```
-Ingestion and querying are separate: index once, query many times.
-
-## 4. Folder structure
-```
-app/        main.py (routes) config.py schemas.py ingestion.py embeddings.py
-            vector_store.py retrieval.py llm_service.py rag_pipeline.py errors.py
-scripts/    ingest_handbook.py  evaluate.py
-tests/      test_api.py test_ingestion.py test_retrieval.py test_rag_pipeline.py
-            conftest.py eval_questions.json
-data/       handbook.pdf (you add this)   chroma_db/ (generated)
+React form --POST JSON--> n8n Webhook --> Validate --> IF valid?
+                                              no -> Respond 400
+                                              yes -> IF rating <= 2 -> "Needs Attention" | else "Positive"
+                                                  -> Google Sheets append (error -> Respond 500)
+                                                  -> Send email       (error -> Respond 502, saved: true)
+                                                  -> Respond 200
 ```
 
-## 5. Setup (Python 3.11 to 3.14; tests ran on 3.12 and 3.14)
-Windows PowerShell:
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-macOS/Linux:
+The webhook uses **Respond to Webhook** mode, so React only sees success after Sheets and email have finished.
+
+## Prerequisites
+Node.js 18+, an n8n instance (cloud or self-hosted), a Google account, and SMTP credentials (e.g. Gmail app password, Brevo, Mailgun).
+
+## 1. Run the frontend
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+npm install
+cp .env.example .env     # then paste your webhook URL
+npm run dev
 ```
-Edit `.env` and set `OPENAI_API_KEY`. `OPENAI_MODEL` may stay blank (default `gpt-4o-mini`); use any
-model your account can access. For another provider with an OpenAI-compatible API, also set `OPENAI_BASE_URL`.
+`VITE_N8N_WEBHOOK_URL` — Test URL while developing: `https://YOUR-N8N/webhook-test/student-feedback`. The test URL only works after you click **Listen for test event** (or Execute workflow) and handles one request. Production URL (`/webhook/student-feedback`) works only when the workflow is **Active**. Restart `npm run dev` after editing `.env`.
 
-## 6. Ingest the handbook
-Put the official PDF at `data/handbook.pdf` (or set `HANDBOOK_PATH`), then:
-```
-python -m scripts.ingest_handbook          # skips if this exact PDF is already indexed
-python -m scripts.ingest_handbook --force  # rebuild the index
-```
-It prints pages processed, chunks created/indexed, and warnings for pages with no extractable text.
-The first run downloads the embedding model (needs internet).
+## 2. Google Sheets
+1. Create a spreadsheet **Student Feedback Database** with a worksheet **Feedback Responses**.
+2. Row 1 headers, exactly: `Student Name | Email | Course Name | Rating | Feedback Message | Status | Submitted At`.
+3. In n8n: Credentials → New → Google Sheets OAuth2 → sign in.
 
-## 7. Run the API
-```
-uvicorn app.main:app --reload
-```
-(Note: `app.main:app`, with the `:app`.) Swagger UI: http://127.0.0.1:8000/docs
+## 3. Email
+In n8n: Credentials → New → SMTP (host, port, user, password). Set the same address as the **From Email** in the email node.
 
-## 8. Ask a question
-```powershell
-curl.exe -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d "{\"question\": \"What are the tutor support hours?\"}"
-```
-```bash
-curl -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" \
-  -d '{"question": "What are the tutor support hours?"}'
-```
-Response shape (illustrative; real values come from your handbook):
-```json
-{"answer": "...", "source": "Page 20",
- "sources": [{"document": "ZAIO Full-Stack AI Engineer Bootcamp Handbook", "page": 20, "page_end": null, "excerpt": "..."}],
- "status": "answered"}
-```
-Not found:
-```json
-{"answer": "I couldn't find that information in the ZAIO handbook.", "source": null, "sources": [], "status": "not_found"}
-```
-| Code | Meaning |
-|---|---|
-| 200 | Processed (including `not_found`) |
-| 422 | Missing/empty/whitespace/non-string/too-long question, or invalid JSON |
-| 503 | Vector DB, embedding model or LLM unavailable (also: index empty, API key missing) |
-| 500 | Unexpected error (generic message, no internals) |
+## 4. Import and configure the workflow
+1. n8n → Workflows → Import from File → `n8n/student-feedback-workflow.json`.
+2. **Google Sheets: Append Feedback**: pick your credential, document and sheet. Check the column mapping appears (click the refresh icon on the columns if empty).
+3. **Email: Send Acknowledgement**: pick the SMTP credential and set **From Email**.
+4. Run a test with `n8n/sample-payloads.json` (inspect Webhook output to confirm fields sit under `body`), then toggle **Active**.
+5. Switch `.env` to the production URL.
 
-**Page numbers are physical PDF pages (1-based)**, which may differ from numbers printed on the pages.
+Credentials are intentionally not in the JSON. I could not verify this JSON against your n8n version (written for Webhook v2, IF v2, Set v3.4, Google Sheets v4.5, Send Email v2.1). If a node shows as unknown, delete and re-add it, then re-apply the expressions listed in the node names.
 
-## 9. Relevance threshold (important)
-Chroma returns cosine **distance** (`distance = 1 − similarity`). The code converts to
-`similarity = 1 − distance` and keeps chunks with `similarity ≥ RELEVANCE_THRESHOLD` (default 0.30).
-Raise it if unrelated questions get answered; lower it if real questions return `not_found`.
-Tune it with `scripts/evaluate.py` on the real handbook.
+## Data contract
+`{ studentName, email, courseName, rating (1-5 number), feedbackMessage }`. Status: rating ≤ 2 → `Needs Attention`, otherwise `Positive`. `submittedAt` is UTC ISO 8601. Text beginning with `= + - @` gets a leading `'` before it is stored to block spreadsheet formula injection.
 
-## 10. Notes from the real handbook (24-page PDF)
-Verified by running ingestion code on the supplied PDF (with a stand-in embedder, see section 11):
-24/24 pages have extractable text; 29 chunks are created; a second run is skipped as unchanged.
-- **Physical vs printed pages:** printed numbers drift (e.g. Grade Breakdown is printed "13" but is PDF page 14; two pages are printed "04"). The API always reports **physical PDF pages**: fees = 16, grade breakdown = 14, tutor support = 20.
-- **Chunks never cross pages** (`CHUNK_ACROSS_PAGES=false`), so every citation is a single exact page. Section titles come from the largest font on the page, because PyMuPDF often returns the title *after* the body text in this PDF.
-- Footer markers such as `0 4` are removed during cleaning.
-- The Team page (15) extracts names, roles and emails as separate groups, so name-to-email pairing relies on the email's name (`asif@zaio.io`). Check test T12.
+## Partial failures and duplicates
+- Sheets fails → 500, nothing saved, React keeps the form data so the student can retry.
+- Sheets succeeds, email fails → 502 with `saved: true`. React shows a warning and does **not** invite resubmission, avoiding a duplicate row. Recovery: find the execution in n8n's Executions list and send the email manually, or add an error workflow (Workflow settings → Error workflow) to alert you.
+- Double-clicks are blocked in React. Server-side idempotency (a submission ID checked against the sheet) is **not** implemented; known limitation.
 
-## 11. Design notes
-- Chunk size is in **words** (default 180/30 overlap), not 500 tokens: `all-MiniLM-L6-v2` truncates input
-  at 256 tokens, so larger chunks would be partly invisible to search.
-- The system prompt follows the assignment text, with one change: the LLM cites passage numbers `[1]`
-  and the backend converts them to real pages (so page numbers can never be invented).
-- The LLM receives the handbook text in the user message and the rules in the system message.
+## Test plan
+Send each with `curl -X POST <url> -H "Content-Type: application/json" -d @file` or via the form. Check browser message, n8n execution, sheet row, inbox.
 
-## 12. Tests
-```
-pytest -v
-```
-**What the automated tests prove:** ingestion, page metadata, deduplication, threshold logic, citations,
-fallback, validation and error handling — using a *fake* embedder and *fake* LLM (offline, deterministic).
-**What they do NOT prove:** MiniLM retrieval quality on your handbook, or live LLM behaviour.
-For that, fill in `tests/eval_questions.json` from the real handbook, then run `python -m scripts.evaluate`
-(writes `docs/TEST_REPORT.md`; the 13 cases in `tests/eval_questions.json` are already filled from the handbook). Read each answer against the PDF yourself.
+| # | Input | Expected | Row | Email |
+|---|-------|----------|-----|-------|
+| 1-3 | rating 5 / 4 / 3 | 200, `Positive` | yes | yes |
+| 4-5 | rating 2 / 1 | 200, `Needs Attention` | yes | yes |
+| 6-9 | empty name / bad email / no course / empty message | form error; direct POST gives 400 | no | no |
+| 10 | rating 0 or 6 | form blocks; direct POST gives 400 | no | no |
+| 11 | n8n stopped / wrong URL | "Could not reach the server…" and data kept | no | no |
+| 12 | disconnect Sheets credential | 500 message, data kept | no | no |
+| 13 | break SMTP credential | 502, warning shown, form cleared | yes | no |
+| 14 | double-click Submit | one request in n8n Executions | one | one |
 
-## 13. n8n
-Add an **HTTP Request** node: Method `POST`, URL `http://localhost:8000/ask`, Body = JSON, `{"question": "{{ $json.question }}"}`.
-Read `answer`, `source`, `status` from the response. `localhost` only works if n8n and the API run on the same
-machine/network namespace. If n8n runs in Docker use `http://host.docker.internal:8000/ask`, start the API with
-`uvicorn app.main:app --host 0.0.0.0 --port 8000`, and do not expose it publicly without authentication (none is built in).
+None of these have been executed by me; run them and record your results.
 
-## 14. Troubleshooting
-| Problem | Fix |
-|---|---|
-| `Handbook PDF not found` | Put the file at `data/handbook.pdf` or set `HANDBOOK_PATH` |
-| 503 "index is empty" | Run `python -m scripts.ingest_handbook` |
-| 503 "LLM is not configured" | Set `OPENAI_API_KEY` in `.env`, restart the server |
-| Everything returns `not_found` | Lower `RELEVANCE_THRESHOLD` (try 0.2) |
-| Unrelated questions get answers | Raise `RELEVANCE_THRESHOLD` |
-| Embedding model fails to load | Check internet on first run |
+## Troubleshooting
+- **CORS error**: the Webhook node sets Allowed Origins to `*`; restrict it to your site's origin in production. CORS is not authentication.
+- **404 on webhook**: test URL used without listening, or production URL used while inactive.
+- **Fields undefined in n8n**: payload is under `$json.body`, not `$json`.
+- **Sheets permission/auth error**: reconnect the OAuth credential and make sure the account can edit the sheet.
+- **Email auth error**: use an app password / SMTP key, not your login password.
+- **Frontend hangs**: the response node never ran; check the execution for an unconnected branch.
 
-## 15. Known limitations
-No OCR (scanned pages are reported, not read). Heading detection is a heuristic. No authentication.
-Tables may extract as plain lines. The live pipeline (real MiniLM embeddings + real LLM) has been run and returned live answers; see `docs/TEST_REPORT.md` for the evaluation results.
+## Deployment and security
+Deploy `npm run build` output (`dist/`) to Netlify/Vercel/GitHub Pages and set `VITE_N8N_WEBHOOK_URL` in their environment settings. `VITE_` variables are visible in the built bundle, so the webhook URL is public: add rate limiting (reverse proxy), a header secret or CAPTCHA before real use, and use HTTPS. Never put SMTP or Google secrets in React.
 
-## 16. Screenshots
-![Answered question](docs/screenshots/answered.png)
-![Question not in handbook](docs/screenshots/not_found.png)
-![Invalid request](docs/screenshots/invalid_422.png)
+## Rubric alignment
+| Criterion | How the project meets it |
+|-----------|--------------------------|
+| Front-End Design | Branded header, clean card layout, star rating with labels, inline validation, loading/success/error states, responsive down to mobile, visible keyboard focus, reduced-motion support. |
+| n8n Workflow Design | Left-to-right flow with descriptive node names and four colour-coded sticky notes (Receive & validate, Classify, Store, Notify & respond). One validation node, one shared Sheets node and one email node, with no duplicated steps. |
+| Conditional Logic | Two IF nodes: valid vs invalid (invalid → 400, nothing stored) and rating ≤ 2 → `Needs Attention`, else `Positive`. All five ratings plus out-of-range values (0, 6) are covered by the test table. |
+| Automated Notifications | Required subject and body, personalised with name, course and rating, plus a line that adapts to low vs high ratings. Sent as plain text so user input can't inject markup. Retries up to 3 times; if it still fails the student sees a clear message and the feedback stays saved. |
